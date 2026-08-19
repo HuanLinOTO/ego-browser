@@ -114,8 +114,13 @@ export class CaptureManager {
       const failed = this.backend;
       this.backend = null;
       if (failed) {
-        await failed.stop?.("start-failed").catch(() => {});
-        await failed.dispose?.().catch(() => {});
+        // dispose() is sync (returns undefined) on both backends; wrap in
+        // Promise.resolve so .catch survives a non-Promise return value.
+        // The ?. only guards the call, not the trailing .catch — without
+        // this wrapper, dispose?.().catch throws "Cannot read properties of
+        // undefined (reading 'catch')" and masks the real startup error.
+        await Promise.resolve(failed.stop?.("start-failed")).catch(() => {});
+        await Promise.resolve(failed.dispose?.()).catch(() => {});
       }
       this.#setStatus({ backend: backendName, state: "failed", targetId, generation: this.generation, code: error.code, message: error.message });
       if (backendName === "ffmpeg" && this.backendFactories.cdp) {

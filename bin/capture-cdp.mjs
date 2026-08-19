@@ -118,7 +118,15 @@ export class CdpCaptureBackend {
     const session = await this.sessions.ensure(targetId);
     const config = this.getConfig();
     this.current = { targetId, sessionId: session.sessionId, lastFrameAt: 0, startedAt: this.now() };
-    this.onStatus({ backend: "cdp", state: "starting", targetId });
+    this.onStatus({ backend: "cdp", state: "starting", targetId, message: "Activating target tab" });
+    // Chrome does not render background tabs — Page.startScreencast produces
+    // no frames for them and Page.captureScreenshot returns a frozen bitmap
+    // of the last render. Bring the tab to the foreground first so the user
+    // sees live content when they select a tab in the sidebar.
+    try {
+      await this.cdp.call("Page.bringToFront", {}, session.sessionId);
+    } catch {}
+    this.onStatus({ backend: "cdp", state: "starting", targetId, message: null });
     try {
       await this.cdp.call("Page.startScreencast", {
         format: "jpeg",

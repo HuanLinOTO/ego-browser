@@ -62,7 +62,7 @@ export async function assertCaptureSupport(path, platform = process.platform, sp
 export async function selectEncoder(path, requested, spawn = nodeSpawn, capture = null, platform = process.platform) {
   if (requested === "software") return "libx264";
   const candidates = requested !== "auto" ? [requested] : platform === "win32"
-    ? ["h264_mf", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
+    ? ["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"]
     : process.platform === "darwin" ? ["h264_videotoolbox", "libx264"] : ["h264_nvenc", "h264_vaapi", "h264_qsv", "libx264"];
   for (const encoder of candidates) {
     const encoderArgs = encoder === "h264_mf"
@@ -71,7 +71,7 @@ export async function selectEncoder(path, requested, spawn = nodeSpawn, capture 
     const inputArgs = platform === "win32" && capture?.source
       ? buildCaptureInput({ source: capture.source, fps: capture.fps, maxWidth: capture.maxWidth, encoder })
       : ["-f", "lavfi", "-i", "color=size=64x64:rate=1"];
-    const probe = await runProbe(path, ["-hide_banner", "-loglevel", "error", ...inputArgs, "-frames:v", "1", ...encoderArgs, "-f", "null", "-"], spawn, 2000);
+    const probe = await runProbe(path, ["-hide_banner", "-loglevel", "error", ...inputArgs, "-frames:v", "1", ...encoderArgs, "-f", "null", "-"], spawn, 8000);
     if (probe.ok) return encoder;
   }
   const error = new Error(`FFmpeg encoder is unavailable: ${requested}`);
@@ -113,6 +113,22 @@ export class FfmpegCaptureBackend {
   async start({ targetId }) {
     this.targetId = targetId;
     const config = this.getConfig();
+    this.onStatus({ backend: "ffmpeg", state: "starting", targetId, message: "Activating target tab" });
+    // gfxcapture(hwnd) captures the Chrome window's visible content — which
+    // is always the foreground tab. If the user selected a background tab in
+    // the sidebar, bring it to the foreground first so the window title
+    // matches and FFmpeg captures the right content. Without this,
+    // resolveCaptureSource throws ffmpeg-target-not-visible and the manager
+    // falls back to CDP, whose Page.startScreencast produces no frames for
+    // background tabs (Chrome doesn't render them) — resulting in a frozen
+    // preview that only updates via the 3-5s backstop screenshot.
+    try {
+      await this.sessions.call(targetId, "Page.bringToFront", {});
+    } catch {}
+    // Give Chrome a moment to update the OS-level window title after the
+    // tab switch; resolveCaptureSource compares document.title against the
+    // enumerated window title and races the Win32 title refresh otherwise.
+    await new Promise((resolve) => setTimeout(resolve, 200));
     this.onStatus({ backend: "ffmpeg", state: "starting", targetId, message: "Resolving FFmpeg binary" });
     const [path, source] = await Promise.all([
       this.pathResolver(config.ffmpegResolvedPath || config.ffmpegPath),

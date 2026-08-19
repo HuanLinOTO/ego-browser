@@ -32,6 +32,7 @@ const HUMAN_PROBE_JS = `(() => {
 })()`;
 
 const sseClients = new Set();
+const rawClients = new Set();
 const videoClients = new Set();
 const probeCache = new Map();
 const frameCache = new Map();
@@ -113,6 +114,51 @@ function publishJpeg(frame) {
   frameCache.set(frame.targetId, { frame: frame.data, lastActive: frame.ts, viewportW: frame.vw, viewportH: frame.vh });
   while (frameCache.size > 30) frameCache.delete(frameCache.keys().next().value);
   broadcast("frame", frame);
+  // Binary fast path: fan out to /api/frames/raw clients as length-prefixed
+  // packets (see lib/frame-packet.js). The SSE `frame` event above keeps the
+  // base64 path alive for clients that haven't upgraded to the WS transport;
+  // raw clients receive the same JPEG bytes without the +33% base64 tax.
+  if (rawClients.size > 0) {
+    const jpegBuf = Buffer.from(frame.data, "base64");
+    const header = {
+      targetId: frame.targetId,
+      vw: frame.vw,
+      vh: frame.vh,
+      ts: frame.ts,
+      gen: currentStatus.generation,
+      backstop: !!frame.backstop,
+    };
+    for (const client of rawClients) sendRawFrame(client, header, jpegBuf);
+  }
+}
+
+// Write a length-prefixed packet to a raw client with backpressure handling
+// mirroring writeVideo(): if the underlying response is blocked, drop the
+// pending packet and only keep the newest (live playback tolerates frame
+// drops; we never queue stale frames). A client that stays blocked too long
+// is torn down by the HTTP close handler.
+function sendRawFrame(client, header, jpegBuf) {
+  if (client.closed) return;
+  const headerBuf = Buffer.from(JSON.stringify({ ...header, size: jpegBuf.length }), "utf8");
+  const lenBuf = Buffer.alloc(4);
+  lenBuf.writeUInt32LE(headerBuf.length, 0);
+  const packet = Buffer.concat([lenBuf, headerBuf, jpegBuf]);
+  if (client.blocked) {
+    client.pendingPacket = packet;
+    return;
+  }
+  try {
+    if (!client.res.write(packet)) {
+      client.blocked = true;
+      client.res.once("drain", () => {
+        if (client.closed) return;
+        client.blocked = false;
+        const pending = client.pendingPacket;
+        client.pendingPacket = null;
+        if (pending) { try { client.res.write(pending); } catch {} }
+      });
+    }
+  } catch { rawClients.delete(client); }
 }
 
 function publishVideoInit(event) {
@@ -305,6 +351,19 @@ async function main() {
         writeSse(res, "capture-status", manager.status());
         snapshotSpaces().then((spaces) => { if (sseClients.has(client)) writeSse(res, "spaces", spaces); }).catch(() => {});
         const close = () => sseClients.delete(client); req.on("close", close); res.on("close", close); return;
+      }
+      // GET /api/frames/raw — binary fast-path stream consumed by the host's
+      // WS upgrade (/api/ego/frames/ws). Each frame is a length-prefixed
+      // packet (lib/frame-packet.js); the host reassembles and emits a
+      // (text header, binary JPEG) WS message pair per frame. Backpressure
+      // drops stale frames rather than queueing them — see sendRawFrame.
+      if (req.method === "GET" && url.pathname === "/api/frames/raw") {
+        res.writeHead(200, { "content-type": "application/octet-stream", "cache-control": "no-store", "x-accel-buffering": "no" });
+        const client = { res, blocked: false, pendingPacket: null, closed: false };
+        rawClients.add(client);
+        const close = () => { client.closed = true; rawClients.delete(client); };
+        req.on("close", close); res.on("close", close); res.on("error", close);
+        return;
       }
       if (req.method === "GET" && url.pathname === "/api/video/stream") {
         const generation = Number(url.searchParams.get("generation"));

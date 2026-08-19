@@ -47,13 +47,17 @@ export function buildEncoderArgs({ encoder, fps, maxWidth, bitrateKbps = 4000, s
   const bufsizeKbps = bitrateKbps * 2;
   const rateArgs = ["-b:v", `${bitrateKbps}k`, "-maxrate", `${maxrateKbps}k`, "-bufsize", `${bufsizeKbps}k`];
   if (platform === "win32" && source?.sourceType === "window-hwnd") {
-    const common = ["-an", "-g", String(fps), "-bf", "0", ...rateArgs];
+    // libx264 is preferred over h264_mf: the latter's display_remoting
+    // scenario produces only P-slices (no IDR/I-frame), making the stream
+    // undecodable by WebCodecs VideoDecoder. libx264 with -g + -keyint_min
+    // reliably produces IDR frames at the GOP boundary.
+    const common = ["-an", "-g", String(fps), "-keyint_min", String(fps), "-sc_threshold", "0", "-bf", "0", ...rateArgs];
     if (encoder === "h264_mf") {
       common.push("-c:v", encoder, "-hw_encoding", "1", "-scenario", "display_remoting", "-rate_control", "ld_vbr");
     } else if (encoder === "libx264") {
       common.push("-c:v", encoder, "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline", "-pix_fmt", "yuv420p");
     } else {
-      common.push("-c:v", encoder);
+      common.push("-c:v", encoder, "-preset", "ultrafast", "-tune", "zerolatency", "-profile:v", "baseline", "-pix_fmt", "yuv420p");
     }
     return [...common, "-movflags", "empty_moov+default_base_moof+frag_keyframe+skip_trailer", "-frag_duration", "100000", "-f", "mp4", "pipe:1"];
   }

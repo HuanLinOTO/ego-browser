@@ -7,6 +7,11 @@
 观察窗落地双画面管线：修复 CDP 协议根因，并加入可选 FFmpeg H.264/fMP4 后端。
 
 ### 新增 / 优化
+- **观察窗端到端延迟优化（三阶段）**：
+  - **Phase 0 — 延迟测量基线**：浮动面板新增 debug 覆盖层（双击面板标题切换），显示 CDP 后端的 per-frame lag p50/p95/FPS、worker 源/发送/丢弃帧数、FFmpeg 后端的 MSE live-offset p50/p95。侧栏 Tab 的 controller 同样收集指标（控制台可查）。worker 端零改动；FFmpeg 路径用 MSE live-offset 近似（避免改 video stream 二进制协议）。
+  - **Phase 1 — CDP 帧走二进制 WebSocket**：worker 新增 `/api/frames/raw` 长度前缀二进制流（`lib/frame-packet.js` 编解码），host 经 `WS /api/ego/frames/ws` upgrade 代理转发，浏览器侧 `createFrameChannel` 收到 (text header, binary JPEG) 配对后用 `Blob → objectURL` 喂 `<img>`，去掉 base64 (+33% 体积) 和 SSE 文本帧开销。SSE `frame` 事件保留作降级（WS 首帧到达后自动短路 SSE frame 监听，WS 断开自动回退）。两处面板（浮动 + sidebar Tab）共用同一 `FrameChannel`，objectURL 生命周期严格 revoke。新增 `tests/frame-packet.test.mjs`（9 用例）+ `tests/cast-server-ws.test.mjs` 扩展 3 个 frames WS 端到端用例。
+  - **Phase 2 — FFmpeg 路径 WebCodecs 直解**：新增 `lib/fmp4-demux.js`（纯函数 fMP4 box walker，解析 moov/avcC 提取 `description` + codec 字符串，解析 moof/trun/mdat 提取 per-sample NALU），浏览器侧 `createWebCodecsPlayer` 用 `VideoDecoder` 直解 `EncodedVideoChunk` → `VideoFrame` → `<canvas>` rAF 绘制，去掉 MSE SourceBuffer + live-seek 追尾（+100-300ms）。服务器侧零改动；`VideoDecoder` 不支持时自动回退 `createMsePlayer`。`makeZoomImage` 支持 `canvas` 标签以复用现有 zoom/pan 逻辑。新增 `tests/fmp4-demux.test.mjs`（8 用例）。
+- **观察窗输入改用 WebSocket**：浮动面板和 sidebar Tab 的鼠标/滚轮/键盘意图从 `POST /api/ego/input` 切换到长连接 `WS /api/ego/input/ws`。`pointermove` (~60Hz) 不再每帧开新 fetch，单条 WS 复用全生命周期；host 反向推送 worker 响应（含 `capture-target-stale` 409），前端按响应清 live target 并 refresh，行为对齐原 fetch 路径。host↔worker 仍走 loopback HTTP（worker无 WS server，延迟可忽略）；worker 端无改动。新增 `ws@^8.21.0` 依赖（hoisted 到插件 `node_modules`），`.npmrc` 固化 `auto-install-peers=false` 避免 pnpm 拉 private peer。
 - FFmpeg 改为显式按需安装：CDP 不再依赖或安装 `ffmpeg-static`。设置页优先检测自定义路径、系统 PATH 和托管缓存，兼容性检查完成前禁用 FFmpeg 选项，并提供固定版本、SHA-256 校验的一键下载。
 - 新增 `githubMirror`，用用户填写的 HTTPS 基址替换 `https://github.com`；Windows/Linux 固定 BtbN release tag，macOS 固定平台资产。下载进入 `~/.dsh/cache/ego-browser/ffmpeg/` 临时目录，校验、解压和能力探测全部成功后才原子发布。
 - 观察画面新增局部键盘输入代理：普通文本和粘贴走 `Input.insertText`，中文 IME 在 composition 完成后一次发送，控制键和快捷键走 `Input.dispatchKeyEvent`。只在点击观察画面后聚焦，不抢 DSH 自身输入。

@@ -29,7 +29,7 @@ export async function probeFfmpeg(path, { platform = process.platform, env = pro
     const devices = await runFfmpegProbe(path, ["-hide_banner", "-devices"], { spawn });
     if (!devices.ok || !/x11grab/i.test(devices.output)) throw codedError("ffmpeg-capture-input-unavailable", "FFmpeg does not support x11grab capture");
   }
-  const automatic = platform === "win32" ? ["h264_mf", "h264_nvenc", "h264_qsv", "h264_amf", "libx264"]
+  const automatic = platform === "win32" ? ["libx264", "h264_nvenc", "h264_qsv", "h264_amf", "h264_mf"]
     : platform === "darwin" ? ["h264_videotoolbox", "libx264"] : ["h264_nvenc", "h264_vaapi", "h264_qsv", "libx264"];
   const encoders = requestedEncoder === "auto" ? automatic : [requestedEncoder === "software" ? "libx264" : requestedEncoder];
   for (const encoder of encoders) {

@@ -40,21 +40,21 @@ describe("FFmpeg encoder probing", () => {
     await assert.rejects(selectEncoder("ffmpeg", "h264_nvenc", probeSpawn([], "none")), (error) => error.code === "ffmpeg-encoder-unavailable");
   });
 
-  it("uses Media Foundation hardware encoding first on Windows", async () => {
+  it("uses libx264 first on Windows (h264_mf display_remoting produces no IDR)", async () => {
     const calls = [];
     const selected = await selectEncoder("ffmpeg", "auto", (path, argv) => {
       const child = new EventEmitter();
       child.kill = () => {};
       calls.push(argv);
-      queueMicrotask(() => child.emit("exit", argv.includes("h264_mf") ? 0 : 1));
+      queueMicrotask(() => child.emit("exit", argv.includes("libx264") ? 0 : 1));
       return child;
     }, {
       source: { sourceType: "window-hwnd", hwnd: "123", captureWidth: 1264, captureHeight: 805 },
       fps: 30,
       maxWidth: 1280,
     }, "win32");
-    assert.equal(selected, "h264_mf");
-    assert.ok(calls[0].includes("-hw_encoding"));
+    assert.equal(selected, "libx264");
+    assert.ok(calls[0].includes("libx264"));
     assert.ok(calls[0].some((arg) => arg.includes("gfxcapture=hwnd=123")));
   });
 
